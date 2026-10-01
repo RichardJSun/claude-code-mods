@@ -20,3 +20,9 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 `/keepalive` pings now and reports the hit rate. The status line shows `armed`, `warm` or `stopped`.
 
 It assumes the 1h cache TTL. On the 5m TTL the first ping misses and the mod stops.
+
+### Compact on cap
+
+The `compactOnCap` setting (off by default) compacts the conversation when the ping budget runs out, while the cache is still warm. It compacts only when the compaction's cost plus re-caching the summary is less than re-caching the whole context. The mod records the cost and summary size of each compaction it runs and uses them for the next decision. Compaction loses context detail, which is why it is off by default.
+
+A background notification that arrives during compaction waits until compaction finishes, then starts its turn as usual.

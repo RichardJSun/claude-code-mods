@@ -1,8 +1,16 @@
 {
   "name": "cache-keepalive",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Keeps the prompt cache warm while background tasks run",
   "author": { "name": "RichardJSun" },
   "repository": "https://github.com/RichardJSun/claude-code-mods",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "compactOnCap": {
+      "type": "boolean",
+      "title": "Compact when the ping budget runs out",
+      "description": "Compacts the conversation while the cache is still warm instead of letting it expire. Loses context detail.",
+      "default": false
+    }
+  }
 }
