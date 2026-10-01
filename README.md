@@ -19,7 +19,9 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 
 `/keepalive` pings now and reports the hit rate. The status line shows `armed`, `warm` or `stopped`.
 
-It assumes the 1h cache TTL. On the 5m TTL the first ping misses and the mod stops.
+### Limitations
+
+The mod assumes the 1h cache TTL and cannot detect the 5m TTL, which a session drops to when it enters usage overage. On the 5m TTL the cache expires long before the first ping. That ping misses, pays for a full re-cache itself and saves nothing, and then the mod stops. Expect one wasted re-cache per background wait while in overage.
 
 ### Compact on cap
 
