@@ -21,7 +21,7 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 
 ### Limitations
 
-The mod assumes the 1h cache TTL and cannot detect the 5m TTL, which a session drops to when it enters usage overage. On the 5m TTL the cache expires long before the first ping. That ping misses, pays for a full re-cache itself and saves nothing, and then the mod stops. Expect one wasted re-cache per background wait while in overage.
+The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while an account-wide rate-limit window, or the session model's own window, is at 100% or more, and it stops if one crosses 100% during the wait. A full window for another model, such as Fable's while the session runs Opus, does not count. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
 
 ### Compact on cap
 

@@ -2,7 +2,8 @@ import type { Hook, Register } from 'claude-code'
 
 type Engine = Parameters<Hook<'turn.start'>>[0]
 
-// Assumes the 1h cache TTL. On the 5m TTL the first ping misses and the pings stop.
+// Assumes the 1h cache TTL. Overage switches to the 5m TTL, so the mod stays off while any
+// rate-limit window is at 100%. A 5m TTL it fails to infer makes the first ping miss and stop the pings.
 const PING_EVERY_MS = 50 * 60_000
 const WRITE_MULT = 2
 const OUTPUT_MULT = 5
@@ -12,6 +13,7 @@ const COMPACT_COST_GUESS = 0.6
 const SUMMARY_RATIO_GUESS = 0.15
 
 let timer: { cancel(): void } | undefined
+let generation = 0
 let compactOnCap = false
 let compacting = false
 let spent = 0
@@ -24,9 +26,20 @@ function readMult(model: string) {
   return /fable|mythos/.test(id) ? 0.025 : /opus[- ]?5[-. ]5/.test(id) ? 0.05 : 0.1
 }
 
+// Bumping the generation also stops a ping already in flight from rearming
 function stop() {
+  generation++
   timer?.cancel()
   timer = undefined
+}
+
+// A model's own window (seven_day_opus) counts only while the session runs that model
+function inOverage(limits: { kind: string, percentUsed: number }[], model: string) {
+  const id = model.toLowerCase()
+  return limits.some(l => {
+    const family = /fable|mythos|opus|sonnet|haiku/.exec(l.kind.toLowerCase())?.[0]
+    return l.percentUsed >= 100 && (!family || id.includes(family))
+  })
 }
 
 // Input-token equivalents a call cost, reads priced for the session's model
@@ -79,9 +92,11 @@ async function compact($: Engine) {
 
 function arm($: Engine) {
   stop()
+  const armedAt = generation
   timer = $.clock.after(PING_EVERY_MS, async () => {
     timer = undefined
     const { ok, line } = await ping($)
+    if (generation !== armedAt) return
     $.ui.log(`keepalive: ${line}`, { to: 'debug' })
     if (!ok) return $.ui.status('keepalive: missed, stopped')
     if (spent < budget) {
@@ -114,11 +129,24 @@ export const register: Register = (on, options) => {
   // Arm only when background work will wake the session later
   on('classic.Stop', async ($, e, next) => {
     if (e.background_tasks?.length && !compacting) {
-      const { context: ctx } = await $.session.usage()
+      const { context: ctx, rateLimits } = await $.session.usage()
+      if (inOverage(rateLimits, await $.session.model())) {
+        $.ui.status('keepalive: off in overage')
+        return next(e)
+      }
       spent = 0
       budget = WRITE_MULT * (ctx.tokens ?? 0)
       $.ui.status(`keepalive: armed, ${e.background_tasks.length} task(s)`)
       arm($)
+    }
+    return next(e)
+  })
+
+  // Other sessions can push the account into overage during the wait
+  on('session.measure', async ($, e, next) => {
+    if (timer && e.changed.includes('rateLimits') && inOverage(e.rateLimits, await $.session.model())) {
+      stop()
+      $.ui.status('keepalive: overage, stopped')
     }
     return next(e)
   })
