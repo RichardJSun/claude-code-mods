@@ -60,7 +60,7 @@ async function compactPays($: Engine) {
 async function compact($: Engine) {
   compacting = true
   try {
-    const r = await $.session.compact({ instructions: 'Keep what is needed to act on the background tasks when they finish.' })
+    const r = await $.session.compact({ instructions: 'Also keep the background tasks\' IDs, output paths, and what to do when they finish.' })
     if (r.skip !== undefined) return `compaction skipped: ${r.skip}`
 
     const before = r.tokensBefore ?? context
