@@ -21,7 +21,7 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 
 ### Limitations
 
-The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while an account-wide rate-limit window, or the session model's own window, is at 100% or more, and it stops if one crosses 100% during the wait. A full window for another model, such as Fable's while the session runs Opus, does not count. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
+The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while the 5-hour or 7-day rate-limit window is at 100% or more, and it stops if one crosses 100% during the wait. Mods cannot see model-scoped limits such as Fable's weekly one, so the mod ignores them. When such a limit runs out, the first ping misses and the mod stops. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
 
 ### Compact on cap
 

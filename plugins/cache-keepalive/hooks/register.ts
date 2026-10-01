@@ -33,13 +33,9 @@ function stop() {
   timer = undefined
 }
 
-// A model's own window (seven_day_opus) counts only while the session runs that model
-function inOverage(limits: { kind: string, percentUsed: number }[], model: string) {
-  const id = model.toLowerCase()
-  return limits.some(l => {
-    const family = /fable|mythos|opus|sonnet|haiku/.exec(l.kind.toLowerCase())?.[0]
-    return l.percentUsed >= 100 && (!family || id.includes(family))
-  })
+// Mods see only the account-wide windows, not model-scoped limits such as Fable's weekly one
+function inOverage(limits: { percentUsed: number }[]) {
+  return limits.some(l => l.percentUsed >= 100)
 }
 
 // Input-token equivalents a call cost, reads priced for the session's model
@@ -130,7 +126,7 @@ export const register: Register = (on, options) => {
   on('classic.Stop', async ($, e, next) => {
     if (e.background_tasks?.length && !compacting) {
       const { context: ctx, rateLimits } = await $.session.usage()
-      if (inOverage(rateLimits, await $.session.model())) {
+      if (inOverage(rateLimits)) {
         $.ui.status('keepalive: off in overage')
         return next(e)
       }
@@ -144,7 +140,7 @@ export const register: Register = (on, options) => {
 
   // Other sessions can push the account into overage during the wait
   on('session.measure', async ($, e, next) => {
-    if (timer && e.changed.includes('rateLimits') && inOverage(e.rateLimits, await $.session.model())) {
+    if (timer && e.changed.includes('rateLimits') && inOverage(e.rateLimits)) {
       stop()
       $.ui.status('keepalive: overage, stopped')
     }

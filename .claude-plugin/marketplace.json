@@ -1,12 +1,12 @@
 {
   "name": "richardjsun-mods",
   "owner": { "name": "RichardJSun" },
-  "metadata": { "description": "Claude Code mods by RichardJSun", "version": "0.2.2" },
+  "metadata": { "description": "Claude Code mods by RichardJSun", "version": "0.2.3" },
   "plugins": [
     {
       "name": "cache-keepalive",
       "description": "Keeps the prompt cache warm while background tasks run",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "author": { "name": "RichardJSun" },
       "source": "./plugins/cache-keepalive"
     }
