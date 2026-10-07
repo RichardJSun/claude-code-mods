@@ -5,6 +5,7 @@ type Engine = Parameters<Hook<'turn.start'>>[0]
 // Assumes the 1h cache TTL. Overage switches to the 5m TTL, so the mod stays off while any
 // rate-limit window is at 100%. A 5m TTL it fails to infer makes the first ping miss and stop the pings.
 const PING_EVERY_MS = 50 * 60_000
+const TTL_MS = 60 * 60_000
 const WRITE_MULT = 2
 const OUTPUT_MULT = 5
 
@@ -19,6 +20,13 @@ let compacting = false
 let spent = 0
 let budget = 0
 let context = 0
+let warmUntil = 0
+
+// The status names the expiry so a line left on screen past it reads as stale
+function until(ms: number) {
+  const d = new Date(ms)
+  return `until ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`
+}
 
 // Cache read price over base input price
 function readMult(model: string) {
@@ -91,20 +99,32 @@ function arm($: Engine) {
   const armedAt = generation
   timer = $.clock.after(PING_EVERY_MS, async () => {
     timer = undefined
-    const { ok, line } = await ping($)
-    if (generation !== armedAt) return
-    $.ui.log(`keepalive: ${line}`, { to: 'debug' })
-    if (!ok) return $.ui.status('keepalive: missed, stopped')
-    if (spent < budget) {
-      $.ui.status('keepalive: warm')
-      return arm($)
-    }
+    try {
+      // A timer that fires late (the machine slept) finds the cache gone, and a ping would only re-write it
+      const now = await $.clock.now()
+      if (generation !== armedAt) return
+      if (now >= warmUntil) return $.ui.status('keepalive: expired, stopped')
 
-    if (!compactOnCap || !(await compactPays($))) return $.ui.status('keepalive: budget spent, stopped')
-    $.ui.status('keepalive: compacting')
-    const result = await compact($)
-    $.ui.log(`keepalive: ${result}`, { to: 'debug' })
-    $.ui.status(`keepalive: ${result.split(' (')[0]}`)
+      const { ok, line } = await ping($)
+      if (generation !== armedAt) return
+      $.ui.log(`keepalive: ${line}`, { to: 'debug' })
+      if (!ok) return $.ui.status('keepalive: missed, stopped')
+      warmUntil = now + TTL_MS
+      if (spent < budget) {
+        $.ui.status(`keepalive: warm ${until(warmUntil)}`)
+        return arm($)
+      }
+
+      if (!compactOnCap || !(await compactPays($))) return $.ui.status(`keepalive: budget spent, stopped, warm ${until(warmUntil)}`)
+      $.ui.status('keepalive: compacting')
+      const result = await compact($)
+      $.ui.log(`keepalive: ${result}`, { to: 'debug' })
+      $.ui.status(`keepalive: ${result.split(' (')[0]}`)
+    } catch (err) {
+      if (generation !== armedAt) return
+      $.ui.log(`keepalive: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
+      $.ui.status('keepalive: error, stopped')
+    }
   })
 }
 
@@ -132,7 +152,8 @@ export const register: Register = (on, options) => {
       }
       spent = 0
       budget = WRITE_MULT * (ctx.tokens ?? 0)
-      $.ui.status(`keepalive: armed, ${e.background_tasks.length} task(s)`)
+      warmUntil = await $.clock.now() + TTL_MS
+      $.ui.status(`keepalive: armed, ${e.background_tasks.length} task(s), warm ${until(warmUntil)}`)
       arm($)
     }
     return next(e)
