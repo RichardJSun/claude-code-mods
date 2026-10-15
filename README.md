@@ -28,3 +28,5 @@ The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TT
 The `compactOnCap` setting (off by default) compacts the conversation when the ping budget runs out, while the cache is still warm. It compacts only when the compaction's cost plus re-caching the summary is less than re-caching the whole context. The mod records the cost and summary size of each compaction it runs and uses them for the next decision. Compaction loses context detail, which is why it is off by default.
 
 A background notification that arrives during compaction waits until compaction finishes, then starts its turn as usual.
+
+Compaction keeps the earlier messages in the session file. After each compaction it runs, the mod adds a line to the transcript with a command that opens the conversation as it was before that compaction, as a new session. The compacted session does not change. The command needs `jq` and uses `--resume-session-at`, a CLI flag that `claude --help` does not show. `/rewind` cannot go back past a compaction after the session is resumed.

@@ -1,4 +1,4 @@
-import { test, expect } from 'claude-code/testing'
+import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const MIN = 60_000
@@ -6,8 +6,8 @@ const task = { id: 'b1', type: 'shell', status: 'running', description: 'build' 
 
 // Stands in for the engine: a 1M-token context, cache hits on every fork, records statuses and forks.
 // The timer fires only on `fire(at)`, so a test sets the wall time it fires at, as a machine that slept would.
-function engine(on: On) {
-  const seen = { statuses: [] as (string | undefined)[], forks: 0 }
+function engine(on: On, forkOutput = 1) {
+  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[] }
   let now = Date.UTC(2026, 9, 7, 12)
   let resolve = () => {}
   on('clock.now', () => ({ value: now }) as never)
@@ -16,8 +16,9 @@ function engine(on: On) {
   on('classic.Stop', () => ({}) as never)
   on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: 100 }, rateLimits: [] } }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
-  on('model.fork', () => (seen.forks++, { value: { isAnswered: true, text: 'ok', usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 } } }) as never)
+  on('model.fork', () => (seen.forks++, { value: { isAnswered: true, text: 'ok', usage: { input_tokens: 10, output_tokens: forkOutput, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 } } }) as never)
   on('ui.status', (_, e) => (seen.statuses.push(e.text), { value: undefined }) as never)
+  on('ui.log', (_, e) => (seen.logs.push(e.text), { value: undefined }) as never)
   return { seen, clock }
 }
 
@@ -36,4 +37,19 @@ test('a timer that fires after the TTL does not ping and says expired', async ($
   await clock.fire(80)
   expect(seen.forks).toBe(0)
   expect(seen.statuses.at(-1)).toBe('keepalive: expired, stopped')
+})
+
+test('compacting on cap logs a command that restores the pre-compaction conversation', { options: { compactOnCap: true } }, async ($, on) => {
+  // 400k output tokens per ping spends the whole 2M budget on the first one
+  const { seen, clock } = engine(on, 400_000)
+  mock.store(on)
+  on('session.id', () => ({ value: 's-1' }) as never)
+  on('session.cwd', () => ({ value: "/work/it's" }) as never)
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensBefore: 1_000_000, tokensAfter: 100_000 }) as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  const restore = seen.logs.find(l => l.includes('--resume-session-at'))
+  expect(restore).toContain(`cd '/work/it'\\''s' && claude --resume s-1 --fork-session --resume-session-at "$(jq -r`)
+  expect(restore).toContain('.timestamp >= "2026-10-07T12:50:00.000Z"')
+  expect(restore).toContain('/projects/*/s-1.jsonl | head -1)"')
 })

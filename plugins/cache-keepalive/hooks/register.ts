@@ -74,11 +74,24 @@ async function compactPays($: Engine) {
   return perToken + WRITE_MULT * ratio < WRITE_MULT
 }
 
+// Compaction only appends to the transcript, and its boundary row names the last message before it.
+// The mod API exposes no message UUIDs, so the command reads that row, picked by when this compaction began.
+// --resume-session-at is a hidden CLI flag; --fork-session leaves the compacted session as it is.
+async function restoreCommand($: Engine, startedAt: string) {
+  const id = await $.session.id()
+  const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
+  const at = `jq -r 'select(.subtype == "compact_boundary" and .timestamp >= "${startedAt}") | .logicalParentUuid' `
+    + `"\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/${id}.jsonl | head -1`
+  return `cd ${quote(await $.session.cwd())} && claude --resume ${id} --fork-session --resume-session-at "$(${at})"`
+}
+
 async function compact($: Engine) {
   compacting = true
   try {
+    const startedAt = new Date(await $.clock.now()).toISOString()
     const r = await $.session.compact({ instructions: 'Also keep the background tasks\' IDs, output paths, and what to do when they finish.' })
     if (r.skip !== undefined) return `compaction skipped: ${r.skip}`
+    $.ui.log(`keepalive: compacted. To reopen the conversation as it was before, in a new session, run: ${await restoreCommand($, startedAt)}`)
 
     const before = r.tokensBefore ?? context
     if (r.usage && before) {
