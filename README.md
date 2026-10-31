@@ -5,6 +5,7 @@ Claude Code mods, published as a plugin marketplace.
 ```
 /plugin marketplace add RichardJSun/claude-code-mods
 /plugin install cache-keepalive@richardjsun-mods
+/plugin install model-select@richardjsun-mods
 ```
 
 ## cache-keepalive
@@ -30,3 +31,15 @@ The `compactOnCap` setting (off by default) compacts the conversation when the p
 A background notification that arrives during compaction waits until compaction finishes, then starts its turn as usual.
 
 Compaction keeps the earlier messages in the session file. After each compaction it runs, the mod adds a line to the transcript with a command that opens the conversation as it was before that compaction, as a new session. The compacted session does not change. The command needs `jq` and uses `--resume-session-at`, a CLI flag that `claude --help` does not show. `/rewind` cannot go back past a compaction after the session is resumed.
+
+## model-select
+
+The Agent tool's `model` field takes only the aliases `sonnet`, `opus`, `haiku` and `fable`. This mod lets a subagent run on any model your account can use, such as `claude-mythos-5-1` or `claude-haiku-4-5-20251001`.
+
+When the first line of an Agent call's prompt is `model: <model>`, the mod runs the subagent on that model and removes the line before the subagent sees the prompt. The line takes the same names as `/model`: a full model ID, or an alias such as `best` or `opus[1m]`. The mod passes the name on unchanged. A name that does not exist fails at the API with `model_not_found`.
+
+At session start the mod gets the list of models your credential can use from `GET /v1/models`, and the Agent tool's description lists those IDs. The fetch sends no message, so it costs no tokens.
+
+### Limitations
+
+The list needs a first-party Anthropic credential. On Bedrock, Vertex or a gateway, or when the fetch fails, the mod writes one line to the transcript with the reason, and the description lists no IDs. The `model:` line still works. A fork always runs on the parent's model, so the mod refuses a fork that has a `model:` line. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` overrides the `model:` line.

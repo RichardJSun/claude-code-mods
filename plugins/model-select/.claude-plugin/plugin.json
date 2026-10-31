@@ -1,0 +1,8 @@
+{
+  "name": "model-select",
+  "version": "0.1.0",
+  "description": "Lets the Agent tool run a subagent on any model id the account can use",
+  "author": { "name": "RichardJSun" },
+  "repository": "https://github.com/RichardJSun/claude-code-mods",
+  "license": "MIT"
+}

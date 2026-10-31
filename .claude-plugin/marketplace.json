@@ -9,6 +9,13 @@
       "version": "0.2.5",
       "author": { "name": "RichardJSun" },
       "source": "./plugins/cache-keepalive"
+    },
+    {
+      "name": "model-select",
+      "description": "Lets the Agent tool run a subagent on any model id the account can use",
+      "version": "0.1.0",
+      "author": { "name": "RichardJSun" },
+      "source": "./plugins/model-select"
     }
   ]
 }
