@@ -149,6 +149,13 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A /clear or /resume keeps the process, so a pending ping would fork into the next session
+  on('session.end', async ($, e, next) => {
+    stop()
+    $.ui.status(undefined)
+    return next(e)
+  })
+
   on('turn.start', async ($, e, next) => {
     stop()
     if (!compacting) $.ui.status(undefined)
