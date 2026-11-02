@@ -14,6 +14,8 @@ const COMPACT_COST_GUESS = 0.6
 const SUMMARY_RATIO_GUESS = 0.15
 
 let timer: { cancel(): void } | undefined
+// True for the whole wait, which `timer` is not: it clears when it fires, so it is gone while a ping runs
+let armed = false
 let generation = 0
 let compactOnCap = false
 let compacting = false
@@ -37,6 +39,7 @@ function readMult(model: string) {
 // Bumping the generation also stops a ping already in flight from rearming
 function stop() {
   generation++
+  armed = false
   timer?.cancel()
   timer = undefined
 }
@@ -54,17 +57,21 @@ function cost(u: { input_tokens: number, output_tokens: number, cache_read_input
 
 async function ping($: Engine) {
   const r = await $.model.fork({ prompt: 'Keep-alive ping. Reply with only: ok' })
-  if (!('usage' in r)) return { ok: false, line: `no ping: ${r.reason}` }
+  if (!('usage' in r)) return { ok: false, paid: 0, line: `no ping: ${r.reason}` }
 
   const u = r.usage
   context = u.cache_read_input_tokens + u.cache_creation_input_tokens + u.input_tokens
   const hit = u.cache_read_input_tokens / Math.max(context, 1)
-  spent += cost(u, readMult(await $.session.model()))
 
   return {
     ok: hit > 0.9,
-    line: `cache read ${u.cache_read_input_tokens}/${context} (${Math.round(hit * 100)}%), spent ${Math.round(spent)} of ${Math.round(budget)} token-equivalents`,
+    paid: cost(u, readMult(await $.session.model())),
+    line: `cache read ${u.cache_read_input_tokens}/${context} (${Math.round(hit * 100)}%)`,
   }
+}
+
+function ledger() {
+  return `spent ${Math.round(spent)} of ${Math.round(budget)} token-equivalents`
 }
 
 // Compacting pays when its own cost plus re-caching the summary is below re-caching the whole context
@@ -77,21 +84,36 @@ async function compactPays($: Engine) {
 // Compaction only appends to the transcript, and its boundary row names the last message before it.
 // The mod API exposes no message UUIDs, so the command reads that row, picked by when this compaction began.
 // --resume-session-at is a hidden CLI flag; --fork-session leaves the compacted session as it is.
-async function restoreCommand($: Engine, startedAt: string) {
-  const id = await $.session.id()
+function posixRestore(cwd: string, id: string, startedAt: string) {
   const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
   const at = `jq -r 'select(.subtype == "compact_boundary" and .timestamp >= "${startedAt}") | .logicalParentUuid' `
     + `"\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/${id}.jsonl | head -1`
-  return `cd ${quote(await $.session.cwd())} && claude --resume ${id} --fork-session --resume-session-at "$(${at})"`
+  return `cd ${quote(cwd)} && claude --resume ${id} --fork-session --resume-session-at "$(${at})"`
+}
+
+// Reads in PowerShell 7 and Windows PowerShell 5.1, which has no && or ??. Only boundary rows reach ConvertFrom-Json
+// because it refuses the case-colliding keys tool inputs can hold. It parses dates in 7 and not in 5.1, and
+// [datetimeoffset] compares either as an instant. PowerShell reads curly quotes as string ends too.
+function powershellRestore(cwd: string, id: string, startedAt: string) {
+  const quote = (s: string) => `'${s.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`
+  return `Set-Location -LiteralPath ${quote(cwd)} -ErrorAction Stop; `
+    + `$dir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { "$HOME/.claude" }; `
+    + `$at = Get-Content "$dir/projects/*/${id}.jsonl" | Where-Object { $_.Contains('"subtype":"compact_boundary"') } | ConvertFrom-Json | `
+    + `Where-Object { [datetimeoffset]$_.timestamp -ge [datetimeoffset]'${startedAt}' } | `
+    + `Select-Object -First 1 -ExpandProperty logicalParentUuid; `
+    + `claude --resume ${id} --fork-session --resume-session-at $at`
 }
 
 async function compact($: Engine) {
   compacting = true
   try {
     const startedAt = new Date(await $.clock.now()).toISOString()
-    const r = await $.session.compact({ instructions: 'Also keep the background tasks\' IDs, output paths, and what to do when they finish.' })
+    const r = await $.session.compact({ instructions: 'Also keep the background tasks\' IDs, output paths, and what to do when they finish, and what each scheduled wake-up is for.' })
     if (r.skip !== undefined) return `compaction skipped: ${r.skip}`
-    $.ui.log(`keepalive: compacted. To reopen the conversation as it was before, in a new session, run: ${await restoreCommand($, startedAt)}`)
+    // The mod API names no platform, so both commands go out
+    const [cwd, id] = [await $.session.cwd(), await $.session.id()]
+    $.ui.log(`keepalive: compacted. To reopen the conversation as it was before, in a new session, run: ${posixRestore(cwd, id, startedAt)}`)
+    $.ui.log(`keepalive: or in PowerShell: ${powershellRestore(cwd, id, startedAt)}`)
 
     const before = r.tokensBefore ?? context
     if (r.usage && before) {
@@ -107,8 +129,15 @@ async function compact($: Engine) {
   }
 }
 
+async function refusal($: Engine) {
+  const { context: ctx } = await $.session.usage()
+  const why = armed ? 'the cache has expired' : 'no wait is armed, so the cache may be cold'
+  return `Not pinging: ${why}. A miss re-writes the whole context, about ${WRITE_MULT * (ctx.tokens ?? 0)} token-equivalents. Use /keepalive force to ping anyway.`
+}
+
 function arm($: Engine) {
   stop()
+  armed = true
   const armedAt = generation
   timer = $.clock.after(PING_EVERY_MS, async () => {
     timer = undefined
@@ -118,9 +147,10 @@ function arm($: Engine) {
       if (generation !== armedAt) return
       if (now >= warmUntil) return $.ui.status('keepalive: expired, stopped')
 
-      const { ok, line } = await ping($)
+      const { ok, paid, line } = await ping($)
       if (generation !== armedAt) return
-      $.ui.log(`keepalive: ${line}`, { to: 'debug' })
+      spent += paid
+      $.ui.log(`keepalive: ${line}, ${ledger()}`, { to: 'debug' })
       if (!ok) return $.ui.status('keepalive: missed, stopped')
       warmUntil = now + TTL_MS
       if (spent < budget) {
@@ -128,6 +158,7 @@ function arm($: Engine) {
         return arm($)
       }
 
+      armed = false
       if (!compactOnCap || !(await compactPays($))) return $.ui.status(`keepalive: budget spent, stopped, warm ${until(warmUntil)}`)
       $.ui.status('keepalive: compacting')
       const result = await compact($)
@@ -137,6 +168,9 @@ function arm($: Engine) {
       if (generation !== armedAt) return
       $.ui.log(`keepalive: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
       $.ui.status('keepalive: error, stopped')
+    } finally {
+      // A rearm or a stop has moved the generation on and owns `armed` now
+      if (generation === armedAt) armed = false
     }
   })
 }
@@ -145,11 +179,19 @@ export const register: Register = (on, options) => {
   compactOnCap = options.compactOnCap === true
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate' })
+    await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate', argumentHint: '[force]' })
+    return next(e)
+  })
+
+  // A /clear or /resume keeps the process, so a pending ping would fork into the next session
+  on('session.end', async ($, e, next) => {
+    stop()
+    $.ui.status(undefined)
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
     stop()
     if (!compacting) $.ui.status(undefined)
     return next(e)
@@ -157,7 +199,9 @@ export const register: Register = (on, options) => {
 
   // Arm only when background work will wake the session later
   on('classic.Stop', async ($, e, next) => {
-    if (e.background_tasks?.length && !compacting) {
+    const tasks = e.background_tasks?.length ?? 0
+    const crons = e.session_crons?.length ?? 0
+    if ((tasks || crons) && !compacting) {
       const { context: ctx, rateLimits } = await $.session.usage()
       if (inOverage(rateLimits)) {
         $.ui.status('keepalive: off in overage')
@@ -166,7 +210,8 @@ export const register: Register = (on, options) => {
       spent = 0
       budget = WRITE_MULT * (ctx.tokens ?? 0)
       warmUntil = await $.clock.now() + TTL_MS
-      $.ui.status(`keepalive: armed, ${e.background_tasks.length} task(s), warm ${until(warmUntil)}`)
+      const work = [tasks && `${tasks} task(s)`, crons && `${crons} wake-up(s)`].filter(Boolean).join(', ')
+      $.ui.status(`keepalive: armed, ${work}, warm ${until(warmUntil)}`)
       arm($)
     }
     return next(e)
@@ -174,17 +219,21 @@ export const register: Register = (on, options) => {
 
   // Other sessions can push the account into overage during the wait
   on('session.measure', async ($, e, next) => {
-    if (timer && e.changed.includes('rateLimits') && inOverage(e.rateLimits)) {
+    if (armed && e.changed.includes('rateLimits') && inOverage(e.rateLimits)) {
       stop()
       $.ui.status('keepalive: overage, stopped')
     }
     return next(e)
   })
 
-  on('command.run', { command: 'keepalive' }, async $ => {
-    const { context: ctx } = await $.session.usage()
-    if (!budget) budget = WRITE_MULT * (ctx.tokens ?? 0)
-    const { ok, line } = await ping($)
-    return { text: `${ok ? 'HIT' : 'MISS'}: ${line}` }
+  // A stopped wait's warmUntil is no evidence the cache is warm, so being armed is what counts, not the time alone.
+  // A manual ping leaves the wait alone: its timer already fires inside the TTL.
+  on('command.run', { command: 'keepalive' }, async ($, e) => {
+    if (e.args.trim() !== 'force' && !(armed && await $.clock.now() < warmUntil)) return { text: await refusal($) }
+    const { ok, paid, line } = await ping($)
+    // The ping is not counted against the wait, so the reply gives its cost and the wait's spend apart
+    const cost = paid ? `, cost ${Math.round(paid)} token-equivalents` : ''
+    const wait = armed ? `; the wait has ${ledger()}` : ''
+    return { text: `${ok ? 'HIT' : 'MISS'}: ${line}${cost}${wait}` }
   })
 }

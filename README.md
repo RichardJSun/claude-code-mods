@@ -10,19 +10,20 @@ Claude Code mods, published as a plugin marketplace.
 
 ## cache-keepalive
 
-When Claude ends a turn while background tasks are still running, the prompt cache can expire before the task's notification arrives. The next request then re-writes the whole context into the cache at 2× the input price.
+When Claude ends a turn while background tasks are still running or a wake-up is scheduled (`ScheduleWakeup`, `/loop`), the prompt cache can expire before the session wakes. The next request then re-writes the whole context into the cache at 2× the input price.
 
 This mod pings the cache with a one-line fork of the conversation every 50 minutes while the session waits. A cache read costs 0.025–0.1× input, so a ping costs a few percent of a re-write. Pings stop when:
 
 - a new turn starts
+- the session ends, or `/clear` or `/resume` replaces it
 - a ping misses the cache
 - the pings have cost as much as one re-write would have
 
-`/keepalive` pings now and reports the hit rate. The status line shows `armed`, `warm` or `stopped`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale.
+`/keepalive` pings now and reports the hit rate, what the ping cost, and while a wait is armed, what the wait has spent. It refuses when no wait is armed or the cache has expired, because a miss there re-writes the whole context. `/keepalive force` pings anyway. A manual ping leaves any wait as it is. The status line shows `armed`, `warm` or `stopped`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale.
 
 ### Limitations
 
-The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while the 5-hour or 7-day rate-limit window is at 100% or more, and it stops if one crosses 100% during the wait. Mods cannot see model-scoped limits such as Fable's weekly one, so the mod ignores them. When such a limit runs out, the first ping misses and the mod stops. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
+A task or wake-up further ahead than the budget lasts (about 17 hours, or 33 on Opus 5.5 and 67 on Fable) still arms the mod, so the session pays for the pings and then the re-write. A task that never wakes the session spends the whole budget for nothing. The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while the 5-hour or 7-day rate-limit window is at 100% or more, and it stops if one crosses 100% during the wait. Mods cannot see model-scoped limits such as Fable's weekly one, so the mod ignores them. When such a limit runs out, the first ping misses and the mod stops. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
 
 ### Compact on cap
 
@@ -30,7 +31,7 @@ The `compactOnCap` setting (off by default) compacts the conversation when the p
 
 A background notification that arrives during compaction waits until compaction finishes, then starts its turn as usual.
 
-Compaction keeps the earlier messages in the session file. After each compaction it runs, the mod adds a line to the transcript with a command that opens the conversation as it was before that compaction, as a new session. The compacted session does not change. The command needs `jq` and uses `--resume-session-at`, a CLI flag that `claude --help` does not show. `/rewind` cannot go back past a compaction after the session is resumed.
+Compaction keeps the earlier messages in the session file. After each compaction it runs, the mod adds two lines to the transcript, each with a command that opens the conversation as it was before that compaction, as a new session. Mods cannot read the platform, so one line is for POSIX shells and needs `jq`, and the other is for PowerShell. The compacted session does not change. Both use `--resume-session-at`, a CLI flag that `claude --help` does not show. `/rewind` cannot go back past a compaction after the session is resumed.
 
 ## model-select
 
