@@ -8,7 +8,7 @@ const task = { id: 'b1', type: 'shell', status: 'running', description: 'build' 
 // Stands in for the engine: a 1M-token context, cache hits on every fork, records statuses and forks.
 // The timer fires only on `fire(at)`, so a test sets the wall time it fires at, as a machine that slept would.
 function engine(on: On, forkOutput = 1) {
-  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[], duringFork: async () => {}, isHit: true, noAnswer: false }
+  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[], duringFork: async () => {}, isHit: true, noAnswer: false, percent: 100 as number | undefined }
   let now = Date.UTC(2026, 9, 7, 12)
   let resolve = () => {}
   on('clock.now', () => ({ value: now }) as never)
@@ -19,7 +19,8 @@ function engine(on: On, forkOutput = 1) {
   }
   on('classic.Stop', () => ({}) as never)
   on('turn.start', (_, e) => ({ turnId: e.turnId }) as never)
-  on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: 100 }, rateLimits: [] } }) as never)
+  on('turn.complete', () => ({ text: '' }) as never)
+  on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: seen.percent }, rateLimits: [] } }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
   on('model.fork', async () => {
     seen.forks++
@@ -219,6 +220,56 @@ test('a main-loop turn cancels the wait', async ($, on) => {
   await $.turn.start({ text: 'hi', turnId: 't-1' } as never)
   await clock.fire(50)
   expect(seen.forks).toBe(0)
+})
+
+test('a wait stays armed while a ping is in flight, for /keepalive', async ($, on) => {
+  const { seen, clock } = engine(on)
+  let reply: string | undefined
+  seen.duringFork = async () => {
+    seen.duringFork = async () => {}
+    reply = (await keepalive($)).text
+  }
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(reply).toContain('HIT')
+})
+
+test('a rate-limit reading during a ping stops the wait', async ($, on) => {
+  const { seen, clock } = engine(on)
+  on('session.measure', () => ({ changed: [] }) as never)
+  seen.duringFork = async () => { await $.session.measure({ changed: ['rateLimits'], rateLimits: [{ percentUsed: 100 }] } as never) }
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(seen.statuses.at(-1)).toBe('keepalive: overage, stopped')
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+})
+
+test('a spent budget ends the wait before compaction begins', { options: { compactOnCap: true } }, async ($, on) => {
+  const { seen, clock } = engine(on, 400_000)
+  mock.store(on)
+  on('session.id', () => ({ value: 's-1' }) as never)
+  on('session.cwd', () => ({ value: '/work' }) as never)
+  let reply: string | undefined
+  on('session.compact', async () => {
+    reply = (await keepalive($)).text
+    return { messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensBefore: 1_000_000, tokensAfter: 100_000 } as never
+  })
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+  expect(reply).toContain('no wait is armed')
+})
+
+test('a missed ping ends the wait', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  seen.isHit = false
+  await clock.fire(50)
+  expect(seen.statuses.at(-1)).toBe('keepalive: missed, stopped')
+  const { text } = await keepalive($)
+  expect(seen.forks).toBe(1)
+  expect(text).toContain('no wait is armed')
 })
 
 // Compacts on the first ping, from the given folder, and returns the logged lines naming a restore command
